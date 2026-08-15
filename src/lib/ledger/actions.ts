@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import * as z from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export type FormState = { error?: string } | undefined;
 
@@ -22,13 +23,29 @@ export async function signUp(_prev: FormState, formData: FormData): Promise<Form
   }
   const displayName = String(formData.get("displayName") ?? "").trim();
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signUp({
+  // Create the account pre-confirmed via the Admin API — this is a closed,
+  // invite-only team app, so email verification would only add friction
+  // (and Supabase's shared dev mailer has a rate limit real signups can hit).
+  const admin = createAdminClient();
+  const { error: createError } = await admin.auth.admin.createUser({
     email: parsed.data.email,
     password: parsed.data.password,
-    options: { data: displayName ? { display_name: displayName } : undefined },
+    email_confirm: true,
+    user_metadata: displayName ? { display_name: displayName } : undefined,
   });
-  if (error) return { error: error.message };
+  if (createError) {
+    const message = createError.message.toLowerCase().includes("already registered")
+      ? "An account with that email already exists."
+      : createError.message;
+    return { error: message };
+  }
+
+  const supabase = await createClient();
+  const { error: signInError } = await supabase.auth.signInWithPassword({
+    email: parsed.data.email,
+    password: parsed.data.password,
+  });
+  if (signInError) return { error: signInError.message };
 
   redirect("/ledger");
 }
